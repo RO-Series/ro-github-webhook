@@ -3,7 +3,7 @@
     "description": "Webhook 监听端口",
     "type": "int",
     "default": 8080,
-    "hint": "GitHub Webhook 推送的 HTTP 监听端口，默认 8080"
+    "hint": "GitHub Webhook 推送的 HTTP 监听端口，默认 8080。Webhook 地址为 http(s)://服务器IP:端口/webhook"
   },
   "secret": {
     "description": "Webhook Secret",
@@ -12,19 +12,25 @@
     "secret": true,
     "hint": "用于验证 GitHub Webhook 签名的密钥，需与 GitHub Webhook 配置中的 Secret 一致"
   },
-  "target_session_type": {
-    "description": "目标会话类型",
+  "platform_id": {
+    "description": "平台适配器 ID",
     "type": "string",
-    "default": "group",
-    "options": ["group", "private"],
-    "labels": ["群聊", "私聊"],
-    "hint": "通知消息发送的目标会话类型"
+    "default": "",
+    "hint": "AstrBot 中 QQ 官方平台适配器的 ID，可在 WebUI 平台管理中查看。例如 yu、qqbot 等"
+  },
+  "target_session_type": {
+    "description": "目标消息类型",
+    "type": "string",
+    "default": "GroupMessage",
+    "options": ["GroupMessage", "FriendMessage"],
+    "labels": ["群聊消息", "私聊消息"],
+    "hint": "群聊填 GroupMessage，私聊填 FriendMessage"
   },
   "target_session_id": {
     "description": "目标会话 ID",
     "type": "string",
     "default": "",
-    "hint": "QQ 群号或 QQ 用户 ID，通知将发送到此会话"
+    "hint": "群聊填 QQ 群号，私聊填 QQ 号。最终会话标识格式为 platform_id:消息类型:会话ID，例如 yu:GroupMessage:123456789"
   },
   "enabled_events": {
     "description": "启用的订阅事件",

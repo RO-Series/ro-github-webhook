@@ -75,13 +75,21 @@ class GithubWebhookPlugin(Star):
         port = int(self.config.get("port", 8080))
         try:
             self._web_app = web.Application()
+            # Webhook 接收端点：POST /webhook
+            self._web_app.router.add_post("/webhook", self._handle_webhook)
+            # 兼容根路径 POST
             self._web_app.router.add_post("/", self._handle_webhook)
+            # 健康检查端点
             self._web_app.router.add_get("/", self._handle_health)
+            self._web_app.router.add_get("/webhook", self._handle_health)
             self._web_runner = web.AppRunner(self._web_app)
             await self._web_runner.setup()
             site = web.TCPSite(self._web_runner, "0.0.0.0", port)
             await site.start()
-            logger.info(f"[GithubWebhook] Webhook 服务器已启动，监听端口 {port}")
+            logger.info(
+                f"[GithubWebhook] Webhook 服务器已启动，监听端口 {port}，"
+                f"Webhook 地址: http://<服务器IP>:{port}/webhook"
+            )
         except OSError as e:
             logger.error(f"[GithubWebhook] 端口 {port} 启动失败: {e}")
         except Exception as e:
@@ -175,14 +183,20 @@ class GithubWebhookPlugin(Star):
 
     async def _send_notification(self, markdown: str):
         """通过 QQ 官方机器人发送 Markdown 通知"""
-        target_type = str(self.config.get("target_session_type", "group"))
+        platform_id = str(self.config.get("platform_id", "")).strip()
+        target_type = str(self.config.get("target_session_type", "GroupMessage"))
         target_id = str(self.config.get("target_session_id", "")).strip()
 
+        if not platform_id:
+            logger.warning("[GithubWebhook] 未配置平台适配器 ID (platform_id)，跳过推送")
+            return
         if not target_id:
             logger.warning("[GithubWebhook] 未配置目标会话 ID，跳过推送")
             return
 
-        umo = f"qq_official:{target_type}:{target_id}"
+        # 构建 unified_msg_origin：platform_id:消息类型:会话ID
+        # 例如：yu:GroupMessage:123456789 或 yu:FriendMessage:987654321
+        umo = f"{platform_id}:{target_type}:{target_id}"
 
         # 方式一：尝试使用 AstrBot Markdown 组件
         try:
@@ -205,7 +219,6 @@ class GithubWebhookPlugin(Star):
         # 方式三：纯文本兜底
         try:
             from astrbot.api.message_components import Plain
-            # 将 markdown 转为纯文本（去掉 markdown 符号）
             plain_text = self._markdown_to_plain(markdown)
             chain = [Plain(plain_text)]
             await self.context.send_message(umo, chain)
@@ -217,7 +230,7 @@ class GithubWebhookPlugin(Star):
         platform = self.context.get_platform(filter.PlatformAdapterType.QQOFFICIAL)
         client = platform.get_client()
 
-        if target_type == "group":
+        if target_type == "GroupMessage":
             # QQ 官方群消息 Markdown
             await client.api.send_group_msg(
                 group_id=int(target_id),
