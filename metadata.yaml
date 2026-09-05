@@ -1,4 +1,4 @@
-name: ro-github-webhook
+name: ro_github_webhook
 display_name: GitHub Webhook 推送
 short_desc: 接收 GitHub Webhook 并通过 QQ 官方机器人推送通知。
 desc: |

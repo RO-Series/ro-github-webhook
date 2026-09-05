@@ -41,11 +41,11 @@ ALL_GITHUB_EVENTS = [
 
 
 @register(
-    "astrbot_plugin_github_webhook",
-    "BaiXuan",
+    "ro_github_webhook",
+    "RO-Series",
     "接收 GitHub Webhook 并通过 QQ 官方机器人推送通知",
     "1.0.0",
-    "https://github.com/BaiXuan/astrbot_plugin_github_webhook",
+    "https://github.com/RO-Series/ro-github-webhook",
 )
 class GithubWebhookPlugin(Star):
     """GitHub Webhook 推送插件"""
