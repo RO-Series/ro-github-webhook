@@ -1,4 +1,4 @@
-name: astrbot_plugin_github_webhook
+name: ro-github-webhook
 display_name: GitHub Webhook 推送
 short_desc: 接收 GitHub Webhook 并通过 QQ 官方机器人推送通知。
 desc: |
@@ -20,8 +20,8 @@ desc: |
   4. 选择需要订阅的事件类型
   5. 在 GitHub 仓库/组织设置中添加 Webhook，URL 为 `http://你的服务器IP:端口/`
 version: 1.0.0
-author: BaiXuan
-repo: https://github.com/BaiXuan/astrbot_plugin_github_webhook
+author: RO-Series
+repo: https://github.com/RO-Series/ro-github-webhook
 support_platforms:
   - qq_official
 astrbot_version: ">=4.0.0"
