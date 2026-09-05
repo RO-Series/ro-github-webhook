@@ -16,7 +16,6 @@ from aiohttp import web
 
 from astrbot.api import logger
 from astrbot.api import all as api
-from astrbot.api.event import filter
 from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, register
 
@@ -70,9 +69,9 @@ class GithubWebhookPlugin(Star):
 
     # ==================== 生命周期 ====================
 
-    @filter.on_astrbot_loaded()
-    async def on_astrbot_loaded(self):
-        """AstrBot 初始化完成后启动 Webhook 服务器"""
+    async def initialize(self):
+        """插件加载完成后启动 Webhook 服务器"""
+        logger.info("[GithubWebhook] 插件初始化中，正在启动 Webhook 服务器...")
         await self._start_webhook_server()
 
     async def terminate(self):
@@ -104,10 +103,23 @@ class GithubWebhookPlugin(Star):
             await self._web_runner.setup()
             self._web_site = web.TCPSite(self._web_runner, "0.0.0.0", port)
             await self._web_site.start()
-            logger.info(
-                f"[GithubWebhook] Webhook 服务器已启动，监听端口 {port}，"
-                f"Webhook 地址: http://<服务器IP>:{port}/webhook"
-            )
+
+            # 打印所有监听地址
+            import socket
+            hostname = socket.gethostname()
+            try:
+                local_ip = socket.gethostbyname(hostname)
+            except Exception:
+                local_ip = "127.0.0.1"
+
+            logger.info("=" * 60)
+            logger.info(f"[GithubWebhook] Webhook 服务器已启动")
+            logger.info(f"[GithubWebhook] 监听端口: {port}")
+            logger.info(f"[GithubWebhook] 本机访问: http://127.0.0.1:{port}/webhook")
+            logger.info(f"[GithubWebhook] 内网访问: http://{local_ip}:{port}/webhook")
+            logger.info(f"[GithubWebhook] 外网访问: http://<公网IP>:{port}/webhook")
+            logger.info(f"[GithubWebhook] 健康检查: http://127.0.0.1:{port}/")
+            logger.info("=" * 60)
         except OSError as e:
             logger.error(f"[GithubWebhook] 端口 {port} 启动失败: {e}")
         except Exception as e:
