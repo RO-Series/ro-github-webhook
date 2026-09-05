@@ -163,26 +163,45 @@ class GithubWebhookPlugin(Star):
         event_type = request.headers.get("X-GitHub-Event", "")
         signature_256 = request.headers.get("X-Hub-Signature-256", "")
         delivery_id = request.headers.get("X-GitHub-Delivery", "")
+        content_type = request.headers.get("Content-Type", "")
 
         body = await request.read()
 
+        logger.info(
+            f"[GithubWebhook] 收到请求: event={event_type}, "
+            f"delivery={delivery_id}, content_type={content_type}, "
+            f"body_len={len(body)}, has_sig={bool(signature_256)}"
+        )
+
+        # ping 事件优先处理，不依赖 payload 解析
+        if event_type == "ping":
+            logger.info(f"[GithubWebhook] 收到 ping 事件 delivery={delivery_id}")
+            return web.Response(
+                status=200,
+                text="Pong",
+                content_type="text/plain",
+            )
+
         # 签名验证
-        secret = str(self.config.get("secret", ""))
+        secret = str(self.config.get("secret", "")).strip()
         if secret:
             if not self._verify_signature(body, signature_256, secret):
-                logger.warning(f"[GithubWebhook] 签名验证失败 delivery={delivery_id}")
+                logger.warning(
+                    f"[GithubWebhook] 签名验证失败 delivery={delivery_id}, "
+                    f"event={event_type}"
+                )
                 return web.Response(status=401, text="Invalid signature")
 
         # 解析 payload
         try:
             payload = json.loads(body.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            body_preview = body[:200].decode("utf-8", errors="replace")
+            logger.error(
+                f"[GithubWebhook] JSON 解析失败 delivery={delivery_id}, "
+                f"error={e}, body_preview={body_preview!r}"
+            )
             return web.Response(status=400, text="Invalid JSON payload")
-
-        # ping 事件直接返回
-        if event_type == "ping":
-            logger.info(f"[GithubWebhook] 收到 ping 事件 delivery={delivery_id}")
-            return web.Response(text="Pong")
 
         # 检查事件是否启用
         enabled_events = self.config.get("enabled_events", [])
@@ -191,9 +210,9 @@ class GithubWebhookPlugin(Star):
 
         # 分发事件
         try:
-            markdown = self._format_event(event_type, payload)
-            if markdown:
-                await self._send_notification(markdown)
+            message = self._format_event(event_type, payload)
+            if message:
+                await self._send_notification(message)
                 logger.info(f"[GithubWebhook] 事件 {event_type} 已推送 delivery={delivery_id}")
         except Exception as e:
             logger.error(f"[GithubWebhook] 处理事件 {event_type} 失败: {e}")
