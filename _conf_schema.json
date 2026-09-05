@@ -5,32 +5,30 @@
     "default": 8080,
     "hint": "GitHub Webhook 推送的 HTTP 监听端口，默认 8080。Webhook 地址为 http(s)://服务器IP:端口/webhook"
   },
+  "target_umo": {
+    "description": "目标会话 UMO",
+    "type": "string",
+    "default": "",
+    "obvious_hint": true,
+    "hint": "接收 GitHub 事件通知的目标会话唯一标识符（UMO）。格式为 platform_id:消息类型:会话ID，例如 yu:GroupMessage:123456789（群聊）或 yu:FriendMessage:987654321（私聊）。可在消息事件中通过 event.unified_msg_origin 获取。"
+  },
   "secret": {
     "description": "Webhook Secret",
     "type": "string",
     "default": "",
     "secret": true,
-    "hint": "用于验证 GitHub Webhook 签名的密钥，需与 GitHub Webhook 配置中的 Secret 一致"
+    "hint": "用于验证 GitHub Webhook 签名的密钥，需与 GitHub Webhook 配置中的 Secret 一致。留空则不验证签名。"
   },
-  "platform_id": {
-    "description": "平台适配器 ID",
-    "type": "string",
-    "default": "",
-    "hint": "AstrBot 中 QQ 官方平台适配器的 ID，可在 WebUI 平台管理中查看。例如 yu、qqbot 等"
-  },
-  "target_session_type": {
-    "description": "目标消息类型",
-    "type": "string",
-    "default": "GroupMessage",
-    "options": ["GroupMessage", "FriendMessage"],
-    "labels": ["群聊消息", "私聊消息"],
-    "hint": "群聊填 GroupMessage，私聊填 FriendMessage"
-  },
-  "target_session_id": {
-    "description": "目标会话 ID",
-    "type": "string",
-    "default": "",
-    "hint": "群聊填 QQ 群号，私聊填 QQ 号。最终会话标识格式为 platform_id:消息类型:会话ID，例如 yu:GroupMessage:123456789"
+  "rate_limit": {
+    "description": "请求速率限制",
+    "type": "int",
+    "slider": {
+      "min": 0,
+      "max": 120,
+      "step": 1
+    },
+    "default": 30,
+    "hint": "每分钟允许的最大 Webhook 请求数。设置为 0 表示不限制。"
   },
   "enabled_events": {
     "description": "启用的订阅事件",

@@ -1,19 +1,23 @@
 """
 AstrBot GitHub Webhook 推送插件
 接收 GitHub Webhook 推送，支持全部 75 种事件类型，
-通过 QQ 官方机器人以 Markdown 格式发送通知。
+通过 QQ 官方机器人发送通知。
 """
 
 import asyncio
 import hashlib
 import hmac
 import json
+import time
+from collections import deque
 from typing import Optional
 
 from aiohttp import web
 
 from astrbot.api import logger
+from astrbot.api import all as api
 from astrbot.api.event import filter
+from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, register
 
 
@@ -55,7 +59,14 @@ class GithubWebhookPlugin(Star):
         self.config = config
         self._web_app: Optional[web.Application] = None
         self._web_runner: Optional[web.AppRunner] = None
-        self._web_task: Optional[asyncio.Task] = None
+        self._web_site: Optional[web.TCPSite] = None
+
+        # 速率限制器
+        rate_limit = int(self.config.get("rate_limit", 30))
+        if rate_limit > 0:
+            self._rate_limiter = _RateLimiter(max_requests=rate_limit)
+        else:
+            self._rate_limiter = None
 
     # ==================== 生命周期 ====================
 
@@ -74,6 +85,12 @@ class GithubWebhookPlugin(Star):
         """启动 aiohttp Webhook 服务器"""
         port = int(self.config.get("port", 8080))
         try:
+            # 清理已有实例
+            if self._web_site:
+                await self._web_site.stop()
+            if self._web_runner:
+                await self._web_runner.cleanup()
+
             self._web_app = web.Application()
             # Webhook 接收端点：POST /webhook
             self._web_app.router.add_post("/webhook", self._handle_webhook)
@@ -82,10 +99,11 @@ class GithubWebhookPlugin(Star):
             # 健康检查端点
             self._web_app.router.add_get("/", self._handle_health)
             self._web_app.router.add_get("/webhook", self._handle_health)
+
             self._web_runner = web.AppRunner(self._web_app)
             await self._web_runner.setup()
-            site = web.TCPSite(self._web_runner, "0.0.0.0", port)
-            await site.start()
+            self._web_site = web.TCPSite(self._web_runner, "0.0.0.0", port)
+            await self._web_site.start()
             logger.info(
                 f"[GithubWebhook] Webhook 服务器已启动，监听端口 {port}，"
                 f"Webhook 地址: http://<服务器IP>:{port}/webhook"
@@ -98,12 +116,15 @@ class GithubWebhookPlugin(Star):
     async def _stop_webhook_server(self):
         """停止 Webhook 服务器"""
         try:
+            if self._web_site:
+                await self._web_site.stop()
             if self._web_runner:
                 await self._web_runner.cleanup()
-                logger.info("[GithubWebhook] Webhook 服务器已停止")
+            logger.info("[GithubWebhook] Webhook 服务器已停止")
         except Exception as e:
             logger.error(f"[GithubWebhook] 停止服务器异常: {e}")
         finally:
+            self._web_site = None
             self._web_runner = None
             self._web_app = None
 
@@ -113,6 +134,20 @@ class GithubWebhookPlugin(Star):
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         """处理 GitHub Webhook 推送"""
+        # 速率限制检查
+        if self._rate_limiter:
+            is_allowed, retry_after = await self._rate_limiter.is_allowed()
+            if not is_allowed:
+                current, max_req = self._rate_limiter.get_usage()
+                logger.warning(
+                    f"[GithubWebhook] 速率限制触发 ({current}/{max_req} requests/min)"
+                )
+                return web.Response(
+                    status=429,
+                    text=f"Rate limit exceeded. Retry after {retry_after} seconds.",
+                    headers={"Retry-After": str(retry_after)},
+                )
+
         event_type = request.headers.get("X-GitHub-Event", "")
         signature_256 = request.headers.get("X-Hub-Signature-256", "")
         delivery_id = request.headers.get("X-GitHub-Delivery", "")
@@ -124,13 +159,18 @@ class GithubWebhookPlugin(Star):
         if secret:
             if not self._verify_signature(body, signature_256, secret):
                 logger.warning(f"[GithubWebhook] 签名验证失败 delivery={delivery_id}")
-                return web.Response(status=403, text="Invalid signature")
+                return web.Response(status=401, text="Invalid signature")
 
         # 解析 payload
         try:
             payload = json.loads(body.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return web.Response(status=400, text="Invalid JSON payload")
+
+        # ping 事件直接返回
+        if event_type == "ping":
+            logger.info(f"[GithubWebhook] 收到 ping 事件 delivery={delivery_id}")
+            return web.Response(text="Pong")
 
         # 检查事件是否启用
         enabled_events = self.config.get("enabled_events", [])
@@ -181,83 +221,22 @@ class GithubWebhookPlugin(Star):
 
     # ==================== 通知发送 ====================
 
-    async def _send_notification(self, markdown: str):
-        """通过 QQ 官方机器人发送 Markdown 通知"""
-        platform_id = str(self.config.get("platform_id", "")).strip()
-        target_type = str(self.config.get("target_session_type", "GroupMessage"))
-        target_id = str(self.config.get("target_session_id", "")).strip()
+    async def _send_notification(self, message: str):
+        """通过 AstrBot 发送通知消息到目标会话"""
+        target_umo = str(self.config.get("target_umo", "")).strip()
 
-        if not platform_id:
-            logger.warning("[GithubWebhook] 未配置平台适配器 ID (platform_id)，跳过推送")
-            return
-        if not target_id:
-            logger.warning("[GithubWebhook] 未配置目标会话 ID，跳过推送")
+        if not target_umo:
+            logger.warning("[GithubWebhook] 未配置目标会话 UMO (target_umo)，跳过推送")
             return
 
-        # 构建 unified_msg_origin：platform_id:消息类型:会话ID
-        # 例如：yu:GroupMessage:123456789 或 yu:FriendMessage:987654321
-        umo = f"{platform_id}:{target_type}:{target_id}"
-
-        # 方式一：尝试使用 AstrBot Markdown 组件
         try:
-            from astrbot.api.message_components import Markdown  # type: ignore
-            chain = [Markdown(content=markdown)]
-            await self.context.send_message(umo, chain)
-            return
-        except ImportError:
-            pass
+            message_chain = api.MessageChain([Plain(message)])
+            result = await self.context.send_message(target_umo, message_chain)
+            logger.info(f"[GithubWebhook] 消息已发送到 {target_umo}, result: {result}")
+            if not result:
+                logger.warning(f"[GithubWebhook] 未找到平台: {target_umo}")
         except Exception as e:
-            logger.debug(f"[GithubWebhook] Markdown 组件发送失败，尝试原生 API: {e}")
-
-        # 方式二：使用 QQ 官方原生 API 发送 Markdown
-        try:
-            await self._send_via_native_api(target_type, target_id, markdown)
-            return
-        except Exception as e:
-            logger.debug(f"[GithubWebhook] 原生 API 发送失败，尝试纯文本: {e}")
-
-        # 方式三：纯文本兜底
-        try:
-            from astrbot.api.message_components import Plain
-            plain_text = self._markdown_to_plain(markdown)
-            chain = [Plain(plain_text)]
-            await self.context.send_message(umo, chain)
-        except Exception as e:
-            logger.error(f"[GithubWebhook] 所有发送方式均失败: {e}")
-
-    async def _send_via_native_api(self, target_type: str, target_id: str, markdown: str):
-        """通过 QQ 官方平台原生 API 发送 Markdown 消息"""
-        platform = self.context.get_platform(filter.PlatformAdapterType.QQOFFICIAL)
-        client = platform.get_client()
-
-        if target_type == "GroupMessage":
-            # QQ 官方群消息 Markdown
-            await client.api.send_group_msg(
-                group_id=int(target_id),
-                message=[{"type": "markdown", "data": {"content": markdown}}],
-            )
-        else:
-            # QQ 官方私聊消息 Markdown
-            await client.api.send_private_msg(
-                user_id=int(target_id),
-                message=[{"type": "markdown", "data": {"content": markdown}}],
-            )
-
-    @staticmethod
-    def _markdown_to_plain(markdown: str) -> str:
-        """将 Markdown 转为纯文本（兜底使用）"""
-        import re
-
-        text = markdown
-        # 去除 markdown 标题符号
-        text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
-        # 去除加粗
-        text = text.replace("**", "")
-        # 去除行内代码符号
-        text = text.replace("`", "")
-        # 链接转为 文本(url)
-        text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1(\2)", text)
-        return text
+            logger.error(f"[GithubWebhook] 发送消息失败: {e}")
 
     # ==================== 事件格式化方法 ====================
 
@@ -1115,3 +1094,39 @@ class GithubWebhookPlugin(Star):
             f"📊 结论：{conclusion}\n"
             f"📋 动作：`{action}`"
         )
+
+
+class _RateLimiter:
+    """基于滑动窗口的速率限制器"""
+
+    def __init__(self, max_requests: int, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._requests: deque = deque()
+        self._lock = asyncio.Lock()
+
+    async def is_allowed(self) -> tuple[bool, int]:
+        """检查请求是否允许，返回 (是否允许, 重试等待秒数)"""
+        if self.max_requests <= 0:
+            return True, 0
+
+        current_time = time.time()
+        async with self._lock:
+            # 移除窗口外的时间戳
+            while self._requests and self._requests[0] < current_time - self.window_seconds:
+                self._requests.popleft()
+
+            if len(self._requests) < self.max_requests:
+                self._requests.append(current_time)
+                return True, 0
+            else:
+                oldest = self._requests[0]
+                retry_after = int(oldest + self.window_seconds - current_time)
+                return False, max(retry_after, 1)
+
+    def get_usage(self) -> tuple[int, int]:
+        """获取当前用量 (当前请求数, 最大请求数)"""
+        current_time = time.time()
+        while self._requests and self._requests[0] < current_time - self.window_seconds:
+            self._requests.popleft()
+        return len(self._requests), self.max_requests
