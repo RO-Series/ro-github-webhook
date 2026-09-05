@@ -146,6 +146,14 @@ class GithubWebhookPlugin(Star):
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         """处理 GitHub Webhook 推送"""
+        try:
+            return await self._do_handle_webhook(request)
+        except Exception as e:
+            logger.error(f"[GithubWebhook] 处理请求时发生未捕获异常: {e}", exc_info=True)
+            return web.Response(status=500, text="Internal Server Error")
+
+    async def _do_handle_webhook(self, request: web.Request) -> web.Response:
+        """实际处理 Webhook 推送的逻辑"""
         # 速率限制检查
         if self._rate_limiter:
             is_allowed, retry_after = await self._rate_limiter.is_allowed()
@@ -182,7 +190,7 @@ class GithubWebhookPlugin(Star):
                 content_type="text/plain",
             )
 
-        # 签名验证
+        # 签名验证（基于原始 body，无论 content-type）
         secret = str(self.config.get("secret", "")).strip()
         if secret:
             if not self._verify_signature(body, signature_256, secret):
@@ -192,16 +200,15 @@ class GithubWebhookPlugin(Star):
                 )
                 return web.Response(status=401, text="Invalid signature")
 
-        # 解析 payload
-        try:
-            payload = json.loads(body.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        # 根据 content-type 解析 payload
+        payload = self._parse_payload(body, content_type)
+        if payload is None:
             body_preview = body[:200].decode("utf-8", errors="replace")
             logger.error(
-                f"[GithubWebhook] JSON 解析失败 delivery={delivery_id}, "
-                f"error={e}, body_preview={body_preview!r}"
+                f"[GithubWebhook] payload 解析失败 delivery={delivery_id}, "
+                f"content_type={content_type}, body_preview={body_preview!r}"
             )
-            return web.Response(status=400, text="Invalid JSON payload")
+            return web.Response(status=400, text="Invalid payload")
 
         # 检查事件是否启用
         enabled_events = self.config.get("enabled_events", [])
@@ -215,9 +222,46 @@ class GithubWebhookPlugin(Star):
                 await self._send_notification(message)
                 logger.info(f"[GithubWebhook] 事件 {event_type} 已推送 delivery={delivery_id}")
         except Exception as e:
-            logger.error(f"[GithubWebhook] 处理事件 {event_type} 失败: {e}")
+            logger.error(f"[GithubWebhook] 处理事件 {event_type} 失败: {e}", exc_info=True)
 
         return web.Response(status=200, text="OK")
+
+    @staticmethod
+    def _parse_payload(body: bytes, content_type: str) -> Optional[dict]:
+        """
+        根据 content-type 解析 GitHub Webhook payload
+        - application/json: 直接解析 body 为 JSON
+        - application/x-www-form-urlencoded: 从 payload 表单字段解析 JSON
+        """
+        if not body:
+            return None
+
+        body_str = body.decode("utf-8", errors="replace")
+
+        # JSON 内容类型
+        if "application/json" in content_type:
+            try:
+                return json.loads(body_str)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return None
+
+        # 表单编码内容类型：payload=%7B...%7D
+        if "application/x-www-form-urlencoded" in content_type:
+            from urllib.parse import parse_qs
+            params = parse_qs(body_str)
+            payload_value = params.get("payload", [None])[0]
+            if payload_value is None:
+                return None
+            try:
+                return json.loads(payload_value)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return None
+
+        # 其他类型：尝试直接解析为 JSON
+        try:
+            return json.loads(body_str)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
 
     @staticmethod
     def _verify_signature(body: bytes, signature: str, secret: str) -> bool:
