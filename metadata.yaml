@@ -1,0 +1,27 @@
+name: astrbot_plugin_github_webhook
+display_name: GitHub Webhook 推送
+short_desc: 接收 GitHub Webhook 并通过 QQ 官方机器人推送通知。
+desc: |
+  ## GitHub Webhook 推送插件
+
+  接收 GitHub Webhook 推送，支持全部 75 种事件类型，将事件通知以 QQ 官方机器人支持的 Markdown 格式发送到指定会话。
+
+  ### 功能特性
+  - 支持 GitHub 全部 75 种 Webhook 事件
+  - 可配置启用的事件类型
+  - HMAC-SHA256 签名验证
+  - QQ 官方机器人 Markdown 消息推送
+  - 可自定义 Webhook 监听端口
+
+  ### 使用说明
+  1. 配置 Webhook 监听端口（默认 8080）
+  2. 设置 Webhook Secret（用于签名验证）
+  3. 配置目标 QQ 会话 ID 与会话类型
+  4. 选择需要订阅的事件类型
+  5. 在 GitHub 仓库/组织设置中添加 Webhook，URL 为 `http://你的服务器IP:端口/`
+version: 1.0.0
+author: BaiXuan
+repo: https://github.com/BaiXuan/astrbot_plugin_github_webhook
+support_platforms:
+  - qq_official
+astrbot_version: ">=4.0.0"
